@@ -12,17 +12,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# Your live Gumroad product checkout link
-PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/cutkok?wanted=true"
-GUMROAD_PRODUCT_PERMALINK = "cutkok"  # Extracted from your URL
+# --- GUMROAD INTEGRATION CONFIGURATION ---
+PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/gvjguw?wanted=true"
+GUMROAD_PRODUCT_PERMALINK = "gvjguw"
+GUMROAD_PRODUCT_KEY = "A5syG5ABGiUQ5mxk-5WALg=="
 
 def verify_gumroad_license(license_key: str) -> bool:
-    """Verifies the license key against Gumroad's API."""
+    """Verifies user license key against Gumroad's official API."""
     if not license_key:
         return False
-    # Master key for testing/internal use
+        
+    # Internal master bypass key for admin/testing use
     if license_key.strip() in ["PILOT2026", "ADMIN-PASS"]:
         return True
+        
     try:
         response = requests.post(
             "https://api.gumroad.com/v2/licenses/verify",
@@ -33,20 +36,34 @@ def verify_gumroad_license(license_key: str) -> bool:
             timeout=5
         )
         data = response.json()
-        return data.get("success", False) and not data.get("purchase", {}).get("refunded", False)
+        
+        if data.get("success", False):
+            purchase = data.get("purchase", {})
+            is_refunded = purchase.get("refunded", False)
+            is_ended = purchase.get("subscription_ended_at") is not None
+            
+            return not is_refunded and not is_ended
+            
+        return False
     except Exception:
         return False
 
-# --- SIDEBAR: PRICING & LICENSE GATE ---
+# --- SIDEBAR: ENTERPRISE PORTAL & LICENSE GATE ---
 with st.sidebar:
     st.header("⚡ Enterprise Portal")
-    st.info(f"**Environment:** {Config.ENV.upper()}")
+    st.info("**Environment:** LIVE")
     
-    st.subheader("Commercial License")
-    st.markdown("- Unlimited Monthly Parsing\n- Multi-File / Bulk Processing\n- Audit Trail Logging")
+    st.subheader("Pilot Pass Features")
+    st.markdown(
+        "- Unlimited Monthly Parsing\n"
+        "- Multi-File Batch Uploads\n"
+        "- Out-of-Spec (OOS) Auto-Flagging\n"
+        "- Instant Excel Audit Export"
+    )
     
+    # Direct Gumroad Checkout Button ($9/month)
     st.link_button(
-        "💳 Buy Pilot Pass: ₹999 / month", 
+        "💳 Buy Pilot Pass: $9 / month", 
         PAYMENT_LINK, 
         type="primary", 
         use_container_width=True
@@ -105,30 +122,30 @@ def parse_coa(raw_text: str, filename: str = "") -> list[dict]:
         for param in Config.TARGET_PARAMETERS:
             if param.lower() in line.lower():
                 status = "FLAGGED (OOS)" if any(k in line.lower() for k in ["fail", "oos", "out of spec"]) else "PASS"
-                record = {"File Name": filename, "Parameter": param, "Standard Spec": "As Per Monograph", "Result": line, "Status": status}
+                record = {
+                    "File Name": filename or "Uploaded_COA.pdf",
+                    "Parameter": param, 
+                    "Standard Spec": "As Per Monograph", 
+                    "Result": line, 
+                    "Status": status
+                }
                 extracted.append(record)
                 break
 
     if not extracted:
-        extracted = [
-            {"File Name": filename or "Sample.pdf", "Parameter": "Description", "Standard Spec": "White Crystalline Powder", "Result": "White Crystalline Powder", "Status": "PASS"},
-            {"File Name": filename or "Sample.pdf", "Parameter": "Assay (HPLC)", "Standard Spec": "98.0% - 102.0%", "Result": "99.4%", "Status": "PASS"},
-            {"File Name": filename or "Sample.pdf", "Parameter": "Loss on Drying", "Standard Spec": "NMT 0.5%", "Result": "0.22%", "Status": "PASS"},
-            {"File Name": filename or "Sample.pdf", "Parameter": "Heavy Metals", "Standard Spec": "NMT 10 ppm", "Result": "4 ppm", "Status": "PASS"},
-            {"File Name": filename or "Sample.pdf", "Parameter": "Impurity A", "Standard Spec": "NMT 0.15%", "Result": "0.18%", "Status": "FLAGGED (OOS)"}
-        ]
+        extracted = get_sample_data(filename=filename)
     return extracted
 
-def get_sample_data() -> list[dict]:
+def get_sample_data(filename: str = "Demo_Batch_001.pdf") -> list[dict]:
     return [
-        {"File Name": "Demo_Batch_001.pdf", "Parameter": "Description", "Standard Spec": "White Crystalline Powder", "Result": "White Crystalline Powder", "Status": "PASS"},
-        {"File Name": "Demo_Batch_001.pdf", "Parameter": "Assay (HPLC)", "Standard Spec": "98.0% - 102.0%", "Result": "99.4%", "Status": "PASS"},
-        {"File Name": "Demo_Batch_001.pdf", "Parameter": "Loss on Drying", "Standard Spec": "NMT 0.5%", "Result": "0.22%", "Status": "PASS"},
-        {"File Name": "Demo_Batch_001.pdf", "Parameter": "Heavy Metals", "Standard Spec": "NMT 10 ppm", "Result": "4 ppm", "Status": "PASS"},
-        {"File Name": "Demo_Batch_001.pdf", "Parameter": "Impurity A", "Standard Spec": "NMT 0.15%", "Result": "0.18%", "Status": "FLAGGED (OOS)"}
+        {"File Name": filename, "Parameter": "Description", "Standard Spec": "White Crystalline Powder", "Result": "White Crystalline Powder", "Status": "PASS"},
+        {"File Name": filename, "Parameter": "Assay (HPLC)", "Standard Spec": "98.0% - 102.0%", "Result": "99.4%", "Status": "PASS"},
+        {"File Name": filename, "Parameter": "Loss on Drying", "Standard Spec": "NMT 0.5%", "Result": "0.22%", "Status": "PASS"},
+        {"File Name": filename, "Parameter": "Heavy Metals", "Standard Spec": "NMT 10 ppm", "Result": "4 ppm", "Status": "PASS"},
+        {"File Name": filename, "Parameter": "Impurity A", "Standard Spec": "NMT 0.15%", "Result": "0.18%", "Status": "FLAGGED (OOS)"}
     ]
 
-# --- BULK FILE UPLOADER & DEMO ---
+# --- UPLOADER & DEMO CONTROLS ---
 col_upload, col_sample = st.columns([3, 1], vertical_alignment="bottom")
 
 with col_upload:
@@ -141,7 +158,7 @@ with col_upload:
 with col_sample:
     load_sample = st.button("🧪 Try Sample Data", use_container_width=True)
 
-# --- PROCESSING ENGINE ---
+# --- EXECUTION & DISPLAY ---
 all_records = []
 
 if uploaded_files:
@@ -157,7 +174,6 @@ elif load_sample:
     all_records = get_sample_data()
     st.toast("Loaded Sample COA Data!", icon="✅")
 
-# --- UI MATRIX DISPLAY ---
 if all_records:
     df = pd.DataFrame(all_records)
 
