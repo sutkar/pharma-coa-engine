@@ -13,11 +13,15 @@ st.set_page_config(
 )
 
 # --- GUMROAD INTEGRATION CONFIGURATION ---
-PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/gvjguw?wanted=true"
+PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/gvjguw"
 GUMROAD_PRODUCT_PERMALINK = "gvjguw"
 
 def verify_gumroad_license(license_key: str) -> bool:
-    """Verifies user license key against Gumroad's official API."""
+    """
+    Verifies user license key against Gumroad's official API using a 2-step strategy:
+    1. Verify using product permalink.
+    2. Fallback to direct key verification if product permalink/slug was updated.
+    """
     clean_key = license_key.strip() if license_key else ""
     if not clean_key:
         return False
@@ -26,6 +30,7 @@ def verify_gumroad_license(license_key: str) -> bool:
     if clean_key in ["PILOT2026", "ADMIN-PASS"]:
         return True
         
+    # Attempt 1: Verify using product permalink
     try:
         response = requests.post(
             "https://api.gumroad.com/v2/licenses/verify",
@@ -36,17 +41,29 @@ def verify_gumroad_license(license_key: str) -> bool:
             timeout=8
         )
         data = response.json()
-        
         if data.get("success", False):
             purchase = data.get("purchase", {})
-            is_refunded = purchase.get("refunded", False)
-            is_ended = purchase.get("subscription_ended_at") is not None
-            
-            return not is_refunded and not is_ended
-            
-        return False
-    except Exception as e:
-        return False
+            if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
+                return True
+    except Exception:
+        pass
+
+    # Attempt 2: Fallback direct key verification (handles tier or slug changes)
+    try:
+        response = requests.post(
+            "https://api.gumroad.com/v2/licenses/verify",
+            data={"license_key": clean_key},
+            timeout=8
+        )
+        data = response.json()
+        if data.get("success", False):
+            purchase = data.get("purchase", {})
+            if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
+                return True
+    except Exception:
+        pass
+
+    return False
 
 # --- SIDEBAR: ENTERPRISE PORTAL & LICENSE GATE ---
 with st.sidebar:
@@ -73,22 +90,19 @@ with st.sidebar:
     
     st.subheader("🔑 License Activation")
     
-    # Store license status in session state
+    # Initialize license state
     if "is_licensed" not in st.session_state:
         st.session_state.is_licensed = False
 
     license_input = st.text_input(
         "Enter License Key from Email Receipt:", 
         type="password",
-        help="Paste your key and press Enter or click Activate License below."
+        help="Paste your key and press Enter or click Activate Key below."
     )
     
-    col_btn, col_status = st.columns([1, 1], vertical_alignment="center")
-    
-    with col_btn:
-        verify_click = st.button("Activate Key", use_container_width=True)
+    activate_clicked = st.button("Activate Key", use_container_width=True)
 
-    # Trigger verification if user pressed Enter or clicked button
+    # Perform verification on input or button click
     if license_input:
         st.session_state.is_licensed = verify_gumroad_license(license_input)
         
