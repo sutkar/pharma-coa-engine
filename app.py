@@ -13,24 +13,41 @@ st.set_page_config(
 )
 
 # --- GUMROAD INTEGRATION CONFIGURATION ---
-PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/gvjguw"
+PAYMENT_LINK = "https://gumroad.com/l/gvjguw"
 GUMROAD_PRODUCT_PERMALINK = "gvjguw"
 
 def verify_gumroad_license(license_key: str) -> bool:
     """
-    Verifies user license key against Gumroad's official API using a 2-step strategy:
-    1. Verify using product permalink.
-    2. Fallback to direct key verification if product permalink/slug was updated.
+    Verifies user license key against Gumroad's official API using a multi-step fallback strategy.
     """
     clean_key = license_key.strip() if license_key else ""
     if not clean_key:
         return False
         
-    # Internal master bypass key for admin/testing use
+    # Internal master bypass keys for testing
     if clean_key in ["PILOT2026", "ADMIN-PASS"]:
         return True
         
-    # Attempt 1: Verify using product permalink
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    # Attempt 1: Direct key verification (Most reliable across Gumroad products/memberships)
+    try:
+        response = requests.post(
+            "https://api.gumroad.com/v2/licenses/verify",
+            data={"license_key": clean_key},
+            headers=headers,
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success", False):
+                purchase = data.get("purchase", {})
+                if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
+                    return True
+    except Exception:
+        pass
+
+    # Attempt 2: Verify using product permalink
     try:
         response = requests.post(
             "https://api.gumroad.com/v2/licenses/verify",
@@ -38,32 +55,33 @@ def verify_gumroad_license(license_key: str) -> bool:
                 "product_permalink": GUMROAD_PRODUCT_PERMALINK,
                 "license_key": clean_key
             },
-            timeout=8
+            headers=headers,
+            timeout=10
         )
-        data = response.json()
-        if data.get("success", False):
-            purchase = data.get("purchase", {})
-            if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
-                return True
-    except Exception:
-        pass
-
-    # Attempt 2: Fallback direct key verification (handles tier or slug changes)
-    try:
-        response = requests.post(
-            "https://api.gumroad.com/v2/licenses/verify",
-            data={"license_key": clean_key},
-            timeout=8
-        )
-        data = response.json()
-        if data.get("success", False):
-            purchase = data.get("purchase", {})
-            if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
-                return True
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success", False):
+                purchase = data.get("purchase", {})
+                if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
+                    return True
     except Exception:
         pass
 
     return False
+
+# --- SESSION STATE INITIALIZATION ---
+if "is_licensed" not in st.session_state:
+    st.session_state.is_licensed = False
+if "license_key_input" not in st.session_state:
+    st.session_state.license_key_input = ""
+
+def handle_license_activation():
+    key_to_check = st.session_state.license_key_input.strip()
+    if key_to_check:
+        is_valid = verify_gumroad_license(key_to_check)
+        st.session_state.is_licensed = is_valid
+    else:
+        st.session_state.is_licensed = False
 
 # --- SIDEBAR: ENTERPRISE PORTAL & LICENSE GATE ---
 with st.sidebar:
@@ -89,27 +107,21 @@ with st.sidebar:
     st.divider()
     
     st.subheader("🔑 License Activation")
-    
-    # Initialize license state
-    if "is_licensed" not in st.session_state:
-        st.session_state.is_licensed = False
 
-    license_input = st.text_input(
+    st.text_input(
         "Enter License Key from Email Receipt:", 
         type="password",
+        key="license_key_input",
+        on_change=handle_license_activation,
         help="Paste your key and press Enter or click Activate Key below."
     )
     
-    activate_clicked = st.button("Activate Key", use_container_width=True)
+    st.button("Activate Key", on_click=handle_license_activation, use_container_width=True)
 
-    # Perform verification on input or button click
-    if license_input:
-        st.session_state.is_licensed = verify_gumroad_license(license_input)
-        
-        if st.session_state.is_licensed:
-            st.success("✅ License Active: Bulk Access Unlocked")
-        else:
-            st.error("❌ Invalid or expired key. Please verify your receipt.")
+    if st.session_state.is_licensed:
+        st.success("✅ License Active: Bulk Access Unlocked")
+    elif st.session_state.license_key_input:
+        st.error("❌ Invalid or expired key. Please verify your receipt.")
     else:
         st.caption("🔒 Paste your license key above and press Enter to unlock bulk features.")
 
@@ -192,7 +204,7 @@ with col_sample:
 all_records = []
 
 if uploaded_files:
-    if not st.session_state.get("is_licensed", False):
+    if not st.session_state.is_licensed:
         st.warning("🔒 File uploading requires an active Pilot Pass. Enter your License Key in the sidebar or test using the 'Try Sample Data' button.")
     else:
         for file in uploaded_files:
