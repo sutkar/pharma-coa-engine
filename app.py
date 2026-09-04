@@ -13,57 +13,62 @@ st.set_page_config(
 )
 
 # --- GUMROAD INTEGRATION CONFIGURATION ---
-PAYMENT_LINK = "https://gumroad.com/l/gvjguw"
-GUMROAD_PRODUCT_PERMALINK = "gvjguw"
+PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/gvjguw"
+# In Gumroad, product_id can be the product permalink/slug ('gvjguw') or the full ID
+GUMROAD_PRODUCT_ID = "gvjguw"
 
 def verify_gumroad_license(license_key: str) -> bool:
     """
-    Verifies user license key against Gumroad's official API using a multi-step fallback strategy.
+    Verifies license key against Gumroad API using product_id and explicit form encoding,
+    mirroring the exact logic from the Vercel serverless verification handler.
     """
     clean_key = license_key.strip() if license_key else ""
     if not clean_key:
         return False
         
-    # Internal master bypass keys for testing
+    # Internal bypass keys for admin/testing
     if clean_key in ["PILOT2026", "ADMIN-PASS"]:
         return True
-        
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    # Attempt 1: Direct key verification (Most reliable across Gumroad products/memberships)
+    url = "https://api.gumroad.com/v2/licenses/verify"
+    
+    # Form-encoded body matching Gumroad's standard API specs
+    payload = {
+        "product_id": GUMROAD_PRODUCT_ID,
+        "license_key": clean_key,
+        "increment_uses_count": "false"  # Prevents locking out buyers on re-verification
+    }
+    
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
     try:
-        response = requests.post(
-            "https://api.gumroad.com/v2/licenses/verify",
-            data={"license_key": clean_key},
-            headers=headers,
-            timeout=10
-        )
+        response = requests.post(url, data=payload, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            if data.get("success", False):
+            if data.get("success") is True:
                 purchase = data.get("purchase", {})
-                if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
-                    return True
+                # Ensure subscription hasn't ended and purchase hasn't been refunded
+                is_refunded = purchase.get("refunded", False)
+                is_ended = purchase.get("subscription_ended_at") is not None
+                return not is_refunded and not is_ended
     except Exception:
         pass
 
-    # Attempt 2: Verify using product permalink
+    # Fallback: Check if product_id was sent as product_permalink instead
     try:
-        response = requests.post(
-            "https://api.gumroad.com/v2/licenses/verify",
-            data={
-                "product_permalink": GUMROAD_PRODUCT_PERMALINK,
-                "license_key": clean_key
-            },
-            headers=headers,
-            timeout=10
-        )
+        fallback_payload = {
+            "product_permalink": GUMROAD_PRODUCT_ID,
+            "license_key": clean_key,
+            "increment_uses_count": "false"
+        }
+        response = requests.post(url, data=fallback_payload, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            if data.get("success", False):
+            if data.get("success") is True:
                 purchase = data.get("purchase", {})
-                if not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None:
-                    return True
+                return not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None
     except Exception:
         pass
 
