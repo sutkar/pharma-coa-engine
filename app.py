@@ -1,4 +1,5 @@
 import io
+import os
 import requests
 import pandas as pd
 import pypdf
@@ -7,78 +8,84 @@ import streamlit as st
 from config import Config
 
 st.set_page_config(
-    page_title="Pharma COA Extractor & Spec Verifier", 
-    page_icon="🧪", 
+    page_title="Pharma COA Extractor & Spec Verifier",
+    page_icon="🧪",
     layout="wide"
 )
 
 # --- GUMROAD INTEGRATION CONFIGURATION ---
-PAYMENT_LINK = "https://adityaspark262.gumroad.com/l/gvjguw"
-# In Gumroad, product_id can be the product permalink/slug ('gvjguw') or the full ID
-GUMROAD_PRODUCT_ID = "gvjguw"
+# Pulled from environment variables (falls back to current defaults) so the
+# same code can be reused across products, and so nothing sensitive is
+# hardcoded — same pattern as GUMROAD_PRODUCT_ID in the Vercel report.js
+# integration.
+PAYMENT_LINK = os.environ.get("GUMROAD_PAYMENT_LINK", "https://adityaspark262.gumroad.com/l/gvjguw?wanted=true")
+GUMROAD_PRODUCT_ID = os.environ.get("GUMROAD_PRODUCT_ID", "A5syG5ABGiUQ5mxk-5WALg==")
+
+# Pilot/testing bypass key — lets pilot customers or internal testers in
+# without a real Gumroad purchase. Kept per product decision, renamed from
+# the original "PILOT2026"/"ADMIN-PASS" strings. Still overridable via env
+# var so it can be rotated or disabled per deployment without a code change.
+# NOTE: anyone with source access (or who guesses this string) gets free
+# access — treat it as a shared secret, rotate it periodically, and consider
+# dropping it once you're past the pilot phase.
+ADMIN_BYPASS_KEY = os.environ.get("ADMIN_BYPASS_KEY", "PILOT-TEST-2026")
+
 
 def verify_gumroad_license(license_key: str) -> bool:
     """
-    Verifies license key against Gumroad API using product_id and explicit form encoding,
-    mirroring the exact logic from the Vercel serverless verification handler.
+    Verifies license key against Gumroad's public license API, mirroring the
+    verification logic used in the Vercel serverless handler (report.js).
     """
     clean_key = license_key.strip() if license_key else ""
     if not clean_key:
         return False
-        
-    # Internal bypass keys for admin/testing
-    if clean_key in ["PILOT2026", "ADMIN-PASS"]:
+
+    if ADMIN_BYPASS_KEY and clean_key == ADMIN_BYPASS_KEY:
         return True
 
     url = "https://api.gumroad.com/v2/licenses/verify"
-    
-    # Form-encoded body matching Gumroad's standard API specs
-    payload = {
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    def _check(payload: dict) -> bool:
+        try:
+            response = requests.post(url, data=payload, headers=headers, timeout=10)
+        except Exception:
+            return False
+        if response.status_code != 200:
+            return False
+        try:
+            data = response.json()
+        except Exception:
+            return False
+        if data.get("success") is not True:
+            return False
+        purchase = data.get("purchase", {})
+        is_refunded = purchase.get("refunded", False)
+        is_ended = purchase.get("subscription_ended_at") is not None
+        return not is_refunded and not is_ended
+
+    # Try product_id first, then product_permalink as a fallback, matching
+    # report.js's expectation that GUMROAD_PRODUCT_ID may be either form.
+    if _check({
         "product_id": GUMROAD_PRODUCT_ID,
         "license_key": clean_key,
-        "increment_uses_count": "false"  # Prevents locking out buyers on re-verification
-    }
-    
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
+        "increment_uses_count": "false",
+    }):
+        return True
 
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success") is True:
-                purchase = data.get("purchase", {})
-                # Ensure subscription hasn't ended and purchase hasn't been refunded
-                is_refunded = purchase.get("refunded", False)
-                is_ended = purchase.get("subscription_ended_at") is not None
-                return not is_refunded and not is_ended
-    except Exception:
-        pass
+    return _check({
+        "product_permalink": GUMROAD_PRODUCT_ID,
+        "license_key": clean_key,
+        "increment_uses_count": "false",
+    })
 
-    # Fallback: Check if product_id was sent as product_permalink instead
-    try:
-        fallback_payload = {
-            "product_permalink": GUMROAD_PRODUCT_ID,
-            "license_key": clean_key,
-            "increment_uses_count": "false"
-        }
-        response = requests.post(url, data=fallback_payload, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success") is True:
-                purchase = data.get("purchase", {})
-                return not purchase.get("refunded", False) and purchase.get("subscription_ended_at") is None
-    except Exception:
-        pass
-
-    return False
 
 # --- SESSION STATE INITIALIZATION ---
 if "is_licensed" not in st.session_state:
     st.session_state.is_licensed = False
 if "license_key_input" not in st.session_state:
     st.session_state.license_key_input = ""
+
 
 def handle_license_activation():
     key_to_check = st.session_state.license_key_input.strip()
@@ -88,11 +95,12 @@ def handle_license_activation():
     else:
         st.session_state.is_licensed = False
 
+
 # --- SIDEBAR: ENTERPRISE PORTAL & LICENSE GATE ---
 with st.sidebar:
     st.header("⚡ Enterprise Portal")
     st.info("**Environment:** LIVE")
-    
+
     st.subheader("Pilot Pass Features")
     st.markdown(
         "- Unlimited Monthly Parsing\n"
@@ -100,27 +108,27 @@ with st.sidebar:
         "- Out-of-Spec (OOS) Auto-Flagging\n"
         "- Instant Excel Audit Export"
     )
-    
+
     # Direct Gumroad Checkout Button ($9/month)
     st.link_button(
-        "💳 Buy Pilot Pass: $9 / month", 
-        PAYMENT_LINK, 
-        type="primary", 
+        "💳 Buy Pilot Pass: $9 / month",
+        PAYMENT_LINK,
+        type="primary",
         use_container_width=True
     )
-    
+
     st.divider()
-    
+
     st.subheader("🔑 License Activation")
 
     st.text_input(
-        "Enter License Key from Email Receipt:", 
+        "Enter License Key from Email Receipt:",
         type="password",
         key="license_key_input",
         on_change=handle_license_activation,
         help="Paste your key and press Enter or click Activate Key below."
     )
-    
+
     st.button("Activate Key", on_click=handle_license_activation, use_container_width=True)
 
     if st.session_state.is_licensed:
@@ -140,6 +148,7 @@ with st.sidebar:
 st.title("🧪 Pharma COA Automated Extractor & Spec Verifier")
 st.markdown("Extract chemical parameters from supplier PDF COAs, process batches in bulk, and flag Out-of-Spec (OOS) items.")
 
+
 # --- HELPER FUNCTIONS ---
 def extract_pdf_text(file_bytes: bytes) -> str:
     extracted_text = ""
@@ -151,7 +160,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
                     extracted_text += text + "\n"
     except Exception:
         pass
-        
+
     if not extracted_text.strip():
         try:
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -159,8 +168,9 @@ def extract_pdf_text(file_bytes: bytes) -> str:
                 extracted_text += (page.extract_text() or "") + "\n"
         except Exception:
             pass
-            
+
     return extracted_text.strip()
+
 
 def parse_coa(raw_text: str, filename: str = "") -> list[dict]:
     lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
@@ -171,9 +181,9 @@ def parse_coa(raw_text: str, filename: str = "") -> list[dict]:
                 status = "FLAGGED (OOS)" if any(k in line.lower() for k in ["fail", "oos", "out of spec"]) else "PASS"
                 record = {
                     "File Name": filename or "Uploaded_COA.pdf",
-                    "Parameter": param, 
-                    "Standard Spec": "As Per Monograph", 
-                    "Result": line, 
+                    "Parameter": param,
+                    "Standard Spec": "As Per Monograph",
+                    "Result": line,
                     "Status": status
                 }
                 extracted.append(record)
@@ -182,6 +192,7 @@ def parse_coa(raw_text: str, filename: str = "") -> list[dict]:
     if not extracted:
         extracted = get_sample_data(filename=filename)
     return extracted
+
 
 def get_sample_data(filename: str = "Demo_Batch_001.pdf") -> list[dict]:
     return [
@@ -192,13 +203,14 @@ def get_sample_data(filename: str = "Demo_Batch_001.pdf") -> list[dict]:
         {"File Name": filename, "Parameter": "Impurity A", "Standard Spec": "NMT 0.15%", "Result": "0.18%", "Status": "FLAGGED (OOS)"}
     ]
 
+
 # --- UPLOADER & DEMO CONTROLS ---
 col_upload, col_sample = st.columns([3, 1], vertical_alignment="bottom")
 
 with col_upload:
     uploaded_files = st.file_uploader(
-        "Upload Supplier COAs (PDF) — Multi-file enabled", 
-        type=Config.ALLOWED_EXTENSIONS, 
+        "Upload Supplier COAs (PDF) — Multi-file enabled",
+        type=Config.ALLOWED_EXTENSIONS,
         accept_multiple_files=True
     )
 
@@ -234,7 +246,7 @@ if all_records:
         st.markdown("### Summary")
         st.metric("Total Parameters Verified", len(df))
         oos_count = len(df[df["Status"].str.contains("FLAGGED|OOS", case=False, na=False)])
-        
+
         if oos_count > 0:
             st.metric("Out of Spec (OOS)", oos_count, delta_color="inverse")
             st.warning(f"⚠️ {oos_count} parameter(s) failed specification.")
